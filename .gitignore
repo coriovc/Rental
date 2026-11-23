@@ -11,6 +11,9 @@ node_modules
 dist
 dist-ssr
 *.local
+config.php
+spaceship-deploy
+*.zip
 
 # Editor directories and files
 .vscode/*

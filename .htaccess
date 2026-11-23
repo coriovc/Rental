@@ -1,0 +1,13 @@
+DirectoryIndex index.php index.html
+Options -Indexes
+
+# Proteger archivos sensibles o de desarrollo si se suben al servidor
+<FilesMatch "^(\.env.*|\.htaccess|\.gitignore|config\.example\.php|package(-lock)?\.json|tsconfig\.json|vite\.config\.ts|metadata\.json|README\.md|.*\.sql|.*\.ts|.*\.tsx)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
