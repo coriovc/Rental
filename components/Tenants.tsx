@@ -43,6 +43,7 @@ interface TenantsProps {
   properties: Property[];
   onAddPayment: (payment: Omit<Payment, 'id'>) => void;
   onUpdatePayment?: (payment: Payment) => void;
+  onMarkPaid?: (paymentId: string) => void;
   onAddTenant: (tenant: Omit<Tenant, 'id'>) => void;
   onUpdateTenant: (tenant: Tenant) => void;
   onDeleteTenant: (tenantId: string) => void;
@@ -58,6 +59,7 @@ export const Tenants: React.FC<TenantsProps> = ({
   properties, 
   onAddPayment, 
   onUpdatePayment,
+  onMarkPaid,
   onAddTenant, 
   onUpdateTenant, 
   onDeleteTenant,
@@ -163,6 +165,21 @@ export const Tenants: React.FC<TenantsProps> = ({
 
   const getTenantPayments = (id: string) => payments.filter(p => p.tenantId === id);
 
+  const getTenantBalance = (id: string) => {
+    const pendingPayments = payments.filter(p => p.tenantId === id && p.status === 'pending');
+    const amount = Math.round(pendingPayments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0) * 100) / 100;
+    return { amount, pendingPayments };
+  };
+
+  useEffect(() => {
+    if (selectedTenant) {
+      const fresh = tenants.find(t => t.id === selectedTenant.id);
+      if (fresh) {
+        setSelectedTenant(fresh);
+      }
+    }
+  }, [tenants]);
+
   const handleOpenPaymentForm = (existingPayment?: Payment) => {
     if (selectedTenant) {
       if (existingPayment) {
@@ -174,7 +191,8 @@ export const Tenants: React.FC<TenantsProps> = ({
         setPaymentStatus(existingPayment.status);
       } else {
         setEditingPayment(null);
-        const rent = selectedTenant.monthlyRent;
+        const balance = getTenantBalance(selectedTenant.id);
+        const rent = balance.amount > 0 ? balance.amount : selectedTenant.monthlyRent;
         setAmountUSD(rent);
         setExchangeRate(bcvRate);
         setAmountBs(Math.round(rent * bcvRate * 100) / 100);
@@ -367,6 +385,7 @@ export const Tenants: React.FC<TenantsProps> = ({
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
         {filteredTenants.map((tenant) => {
           const prop = properties.find(p => p.id === tenant.propertyId);
+          const balance = getTenantBalance(tenant.id);
           return (
             <GlassCard key={tenant.id} className="p-6" onClick={() => setSelectedTenant(tenant)} hoverEffect>
               <div className="flex justify-between items-start mb-5">
@@ -426,6 +445,17 @@ export const Tenants: React.FC<TenantsProps> = ({
                     <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
                       ≈ Bs. {(tenant.monthlyRent * bcvRate).toLocaleString(undefined, { maximumFractionDigits: 0 })}
                     </span>
+                  </div>
+                  <div className="mt-1.5">
+                    {balance.amount > 0 ? (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-black bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400 border border-rose-200/60 dark:border-rose-800/50">
+                        Debe: ${balance.amount.toLocaleString()} USD
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-black bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 border border-emerald-200/60 dark:border-emerald-800/50">
+                        Al día ($0 pendiente)
+                      </span>
+                    )}
                   </div>
                 </div>
                 <span className="text-[10px] font-black text-indigo-600 dark:text-indigo-400 uppercase tracking-widest bg-indigo-50 dark:bg-indigo-950/50 px-3 py-2 rounded-xl group-hover:bg-indigo-600 group-hover:text-white transition-all">Detalle</span>
@@ -1085,7 +1115,84 @@ export const Tenants: React.FC<TenantsProps> = ({
                         </motion.form>
                       ) : (
                         <motion.div key="view-details" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex flex-col h-full">
-                          
+                          {/* Saldo Actual del Cliente */}
+                          {(() => {
+                            const balance = getTenantBalance(selectedTenant.id);
+                            const hasDebt = balance.amount > 0;
+                            const latestPending = balance.pendingPayments[0];
+                            const reminderPayment: Payment = latestPending
+                              ? { ...latestPending, amount: balance.amount, amountBs: Math.round(balance.amount * (latestPending.exchangeRate || bcvRate) * 100) / 100 }
+                              : {
+                                  id: 'saldo',
+                                  tenantId: selectedTenant.id,
+                                  amount: balance.amount,
+                                  amountBs: Math.round(balance.amount * bcvRate * 100) / 100,
+                                  exchangeRate: bcvRate,
+                                  date: new Date().toISOString().split('T')[0],
+                                  month: new Intl.DateTimeFormat('es-ES', { month: 'long' }).format(new Date()),
+                                  status: 'pending'
+                                };
+                            return (
+                              <div className={`mb-5 p-4 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
+                                hasDebt
+                                  ? 'bg-rose-50/70 dark:bg-rose-950/30 border-rose-200 dark:border-rose-800/60'
+                                  : 'bg-emerald-50/70 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800/60'
+                              }`}>
+                                <div>
+                                  <div className="flex items-center gap-2">
+                                    <p className={`text-[10px] font-black uppercase tracking-widest ${hasDebt ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                                      Saldo Actual del Cliente
+                                    </p>
+                                    <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full ${
+                                      hasDebt
+                                        ? selectedTenant.status === 'late'
+                                          ? 'bg-rose-600 text-white'
+                                          : 'bg-amber-500 text-white'
+                                        : 'bg-emerald-600 text-white'
+                                    }`}>
+                                      {hasDebt ? (selectedTenant.status === 'late' ? 'En mora (+5 días)' : 'Debe / Pendiente') : 'Al día'}
+                                    </span>
+                                  </div>
+                                  <div className="flex items-baseline gap-2.5 mt-1">
+                                    <span className={`text-2xl font-black ${hasDebt ? 'text-rose-700 dark:text-rose-300' : 'text-emerald-700 dark:text-emerald-300'}`}>
+                                      ${balance.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
+                                    </span>
+                                    {hasDebt && (
+                                      <span className="text-xs font-bold text-rose-600/80 dark:text-rose-400/80">
+                                        ≈ Bs. {(balance.amount * bcvRate).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                                    {hasDebt
+                                      ? `${balance.pendingPayments.length} ${balance.pendingPayments.length === 1 ? 'cargo pendiente' : 'cargos pendientes'} acumulados`
+                                      : 'Sin saldos pendientes por cobrar'}
+                                  </p>
+                                </div>
+                                {hasDebt && (
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    <a
+                                      href={getWhatsAppReminderLink(selectedTenant, reminderPayment, wsReminderTemplate, bcvRate)}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="px-3.5 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-700 transition-all flex items-center gap-1.5 shadow-sm"
+                                    >
+                                      <MessageSquare size={14} />
+                                      <span>Recordar</span>
+                                    </a>
+                                    <button
+                                      onClick={() => handleOpenPaymentForm()}
+                                      className="px-3.5 py-2 rounded-xl bg-indigo-600 text-white text-xs font-bold hover:bg-indigo-700 transition-all flex items-center gap-1.5 shadow-sm"
+                                    >
+                                      <DollarSign size={14} />
+                                      <span>Abonar / Pagar</span>
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })()}
+
                           {/* Tarjetas de detalles rápidos */}
                           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
                             <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-slate-100 dark:border-slate-800">
@@ -1151,6 +1258,17 @@ export const Tenants: React.FC<TenantsProps> = ({
                                   
                                   {/* Botones de acción por cada pago */}
                                   <div className="flex items-center gap-2 self-end sm:self-center">
+                                    {p.status === 'pending' && onMarkPaid && (
+                                      <button
+                                        onClick={() => onMarkPaid(p.id)}
+                                        className="px-2.5 py-2 text-[11px] font-bold text-indigo-600 bg-indigo-50 dark:bg-indigo-950/50 rounded-xl hover:bg-indigo-600 hover:text-white border border-indigo-200/60 dark:border-indigo-800/50 transition-all flex items-center gap-1"
+                                        title="Marcar este cargo como pagado"
+                                      >
+                                        <Check size={13} />
+                                        <span>Pagar</span>
+                                      </button>
+                                    )}
+
                                     {/* Editar Pago */}
                                     <button 
                                       onClick={() => handleOpenPaymentForm(p)} 
@@ -1169,13 +1287,16 @@ export const Tenants: React.FC<TenantsProps> = ({
                                       <Printer size={15}/>
                                     </button>
 
-                                    {/* Enviar Confirmación por WhatsApp */}
+                                    {/* Enviar Confirmación o Recordatorio por WhatsApp */}
                                     <a 
-                                      href={getWhatsAppConfirmationLink(selectedTenant, p, wsConfirmationTemplate, bcvRate)} 
+                                      href={p.status === 'pending'
+                                        ? getWhatsAppReminderLink(selectedTenant, p, wsReminderTemplate, bcvRate)
+                                        : getWhatsAppConfirmationLink(selectedTenant, p, wsConfirmationTemplate, bcvRate)
+                                      } 
                                       target="_blank" 
                                       rel="noopener noreferrer"
                                       className="p-2.5 text-slate-400 bg-white dark:bg-slate-800 rounded-xl shadow-sm hover:bg-emerald-600 hover:text-white border border-slate-100 dark:border-slate-700 transition-all"
-                                      title="Enviar Comprobante por WhatsApp"
+                                      title={p.status === 'pending' ? 'Enviar Recordatorio por WhatsApp' : 'Enviar Comprobante por WhatsApp'}
                                     >
                                       <MessageSquare size={15}/>
                                     </a>
@@ -1228,6 +1349,11 @@ export const Tenants: React.FC<TenantsProps> = ({
                           </div>
 
                           <div className="p-6 md:p-10 max-w-2xl mx-auto w-full flex-1">
+                          {!editingPayment && getTenantBalance(selectedTenant.id).amount > 0 && (
+                            <div className="mb-6 p-4 rounded-2xl bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-800/50 text-xs text-indigo-700 dark:text-indigo-300">
+                              <strong>Saldo pendiente actual:</strong> ${getTenantBalance(selectedTenant.id).amount.toLocaleString()} USD. Al registrar un pago como <strong>Pagado</strong>, se descontará automáticamente de este saldo (puedes registrar abonos parciales).
+                            </div>
+                          )}
                           <form onSubmit={handlePaymentSubmit} className="space-y-6">
                             <div className="space-y-1">
                               <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-2">Mes Correspondiente</label>

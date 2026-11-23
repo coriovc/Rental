@@ -23,7 +23,9 @@ export const generateReceiptPDF = (
   const doc = new jsPDF();
   const cfg = { ...DEFAULT_PDF_CONFIG, ...(pdfConfig || {}) };
   const rate = payment.exchangeRate || 52.50;
-  const amountBs = payment.amountBs || (payment.amount * rate);
+  const amountBs = (payment.amountBs !== undefined && payment.amountBs !== null && Number(payment.amountBs) > 0)
+    ? Number(payment.amountBs)
+    : (payment.amount * rate);
   const receiptNumber = formatReceiptNumber(payment.id);
 
   // Colores corporativos
@@ -189,10 +191,10 @@ export const generateReceiptPDF = (
   doc.setDrawColor(226, 232, 240);
   doc.line(15, y, 195, y);
 
-  // 4. Totales en USD y Bolívares (Tasa BCV)
+  // 4. Totales en USD y Bolívares (monto fijo registrado en el pago)
   y += 10;
   doc.setFillColor(...lightBg);
-  doc.roundedRect(105, y, 90, 42, 3, 3, 'F');
+  doc.roundedRect(105, y, 90, 34, 3, 3, 'F');
 
   doc.setFontSize(9);
   doc.setFont('helvetica', 'normal');
@@ -202,31 +204,24 @@ export const generateReceiptPDF = (
   doc.setTextColor(...darkColor);
   doc.text(payment.date, 188, y + 8, { align: 'right' });
 
-  doc.setFont('helvetica', 'normal');
-  doc.setTextColor(...grayColor);
-  doc.text('Tasa Oficial BCV:', 112, y + 16);
-  doc.setFont('helvetica', 'bold');
-  doc.setTextColor(...darkColor);
-  doc.text(`Bs. ${Number(rate || 52.50).toFixed(2)} / $`, 188, y + 16, { align: 'right' });
-
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(10);
   doc.setTextColor(...darkColor);
-  doc.text('TOTAL EN DÓLARES:', 112, y + 25);
+  doc.text('TOTAL EN DÓLARES:', 112, y + 17);
   doc.setFontSize(11);
   doc.setTextColor(...primaryColor);
-  doc.text(`$${payment.amount.toLocaleString()}`, 188, y + 25, { align: 'right' });
+  doc.text(`$${payment.amount.toLocaleString()}`, 188, y + 17, { align: 'right' });
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(10);
   doc.setTextColor(...darkColor);
-  doc.text('TOTAL EN BOLÍVARES:', 112, y + 34);
+  doc.text('TOTAL EN BOLÍVARES:', 112, y + 26);
   doc.setFontSize(11);
   doc.setTextColor(5, 150, 105);
-  doc.text(`Bs. ${amountBs.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, 188, y + 34, { align: 'right' });
+  doc.text(`Bs. ${amountBs.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, 188, y + 26, { align: 'right' });
 
   // 5. Notas legales y pie de página
-  y += 54;
+  y += 46;
   doc.setFillColor(248, 250, 252);
   doc.roundedRect(15, y, 180, 26, 3, 3, 'F');
 
@@ -542,27 +537,27 @@ export const generateMonthlyExpensesReportPDF = (
   doc.save(`Reporte_Gastos_${safeMonth}_${year}.pdf`);
 };
 
-// Reparador de emojis dañados en plantillas de WhatsApp (por caracteres '?' o Unicode replacement)
+// Reparador de emojis dañados en plantillas de WhatsApp (solo cuando existen caracteres '?' o Unicode replacement)
 export const repairTemplateEmojis = (template: string): string => {
   if (!template) return template;
   let text = template;
   
   // 1. Plantilla de Recordatorio:
-  text = text.replace(/^(\?|\uFFFD|\u25A1|\u2753)?\s*\*Recordatorio/gm, '📅 *Recordatorio');
-  text = text.replace(/\*Recordatorio de Pago de Alquiler\*\s*(\?|\uFFFD|\u25A1|\u2753)?/g, '📅 *Recordatorio de Pago de Alquiler* 🏠');
-  text = text.replace(/(\?|\uFFFD|\u25A1|\u2753)\s*\*Canon de Alquiler/g, '💵 *Canon de Alquiler');
-  text = text.replace(/(\?|\uFFFD|\u25A1|\u2753)\s*\*Total en Bol[ií]vares/g, '🇻🇪 *Total en Bolívares');
-  text = text.replace(/(\?|\uFFFD|\u25A1|\u2753)\s*\*Monto en Bol[ií]vares/g, '🇻🇪 *Monto en Bolívares');
-  text = text.replace(/¡Muchas gracias por su puntualidad!\s*(\?|\uFFFD|\u25A1|\u2753)?/g, '¡Muchas gracias por su puntualidad! ✨');
+  text = text.replace(/^(\?|\uFFFD|\u25A1|\u2753)+\s*\*Recordatorio/gm, '📅 *Recordatorio');
+  text = text.replace(/\*Recordatorio de Pago de Alquiler\*\s*(\?|\uFFFD|\u25A1|\u2753)+/g, '*Recordatorio de Pago de Alquiler* 🏠');
+  text = text.replace(/(\?|\uFFFD|\u25A1|\u2753)+\s*\*Canon de Alquiler/g, '💵 *Canon de Alquiler');
+  text = text.replace(/(\?|\uFFFD|\u25A1|\u2753)+\s*\*Total en Bol[ií]vares/g, '🇻🇪 *Total en Bolívares');
+  text = text.replace(/(\?|\uFFFD|\u25A1|\u2753)+\s*\*Monto en Bol[ií]vares/g, '🇻🇪 *Monto en Bolívares');
+  text = text.replace(/¡Muchas gracias por su puntualidad!\s*(\?|\uFFFD|\u25A1|\u2753)+/g, '¡Muchas gracias por su puntualidad! ✨');
 
   // 2. Plantilla de Confirmación:
-  text = text.replace(/^(\?|\uFFFD|\u25A1|\u2753)?\s*\*Confirmaci[oó]n/gm, '✅ *Confirmación');
-  text = text.replace(/\*Confirmaci[oó]n de Pago Recibido\*\s*(\?|\uFFFD|\u25A1|\u2753)?/g, '✅ *Confirmación de Pago Recibido* 🎉');
-  text = text.replace(/(\?|\uFFFD|\u25A1|\u2753)\s*\*Mes:/g, '🗓 *Mes:');
-  text = text.replace(/(\?|\uFFFD|\u25A1|\u2753)\s*\*Monto:/g, '💵 *Monto:');
-  text = text.replace(/(\?|\uFFFD|\u25A1|\u2753)\s*\*Equivalente/g, '🇻🇪 *Equivalente');
-  text = text.replace(/(\?|\uFFFD|\u25A1|\u2753)\s*\*Fecha de Pago:/g, '📅 *Fecha de Pago:');
-  text = text.replace(/emitido( y archivado)?\.\s*(\?|\uFFFD|\u25A1|\u2753)*/g, 'emitido y archivado. 📄✨');
+  text = text.replace(/^(\?|\uFFFD|\u25A1|\u2753)+\s*\*Confirmaci[oó]n/gm, '✅ *Confirmación');
+  text = text.replace(/\*Confirmaci[oó]n de Pago Recibido\*\s*(\?|\uFFFD|\u25A1|\u2753)+/g, '*Confirmación de Pago Recibido* 🎉');
+  text = text.replace(/(\?|\uFFFD|\u25A1|\u2753)+\s*\*Mes:/g, '🗓 *Mes:');
+  text = text.replace(/(\?|\uFFFD|\u25A1|\u2753)+\s*\*Monto:/g, '💵 *Monto:');
+  text = text.replace(/(\?|\uFFFD|\u25A1|\u2753)+\s*\*Equivalente/g, '🇻🇪 *Equivalente');
+  text = text.replace(/(\?|\uFFFD|\u25A1|\u2753)+\s*\*Fecha de Pago:/g, '📅 *Fecha de Pago:');
+  text = text.replace(/emitido( y archivado)?\.\s*(\?|\uFFFD|\u25A1|\u2753)+/g, 'emitido y archivado. 📄✨');
   
   return text;
 };

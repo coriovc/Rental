@@ -152,20 +152,36 @@ const App: React.FC = () => {
     if (settings.theme) setTheme(settings.theme);
   };
 
+  const computeTenantStatusAfterPaymentChange = (tenantId: string, nextPayments: Payment[], currentStatus: Tenant['status']): Tenant['status'] => {
+    if (currentStatus === 'inactive') return 'inactive';
+    const now = new Date();
+    const hasOverdue = nextPayments.some(p => {
+      if (p.tenantId !== tenantId || p.status !== 'pending' || (Number(p.amount) || 0) <= 0) return false;
+      const chargeDate = new Date(`${p.date}T00:00:00`);
+      const diffDays = Math.floor((now.getTime() - chargeDate.getTime()) / (1000 * 60 * 60 * 24));
+      return diffDays >= 5;
+    });
+    return hasOverdue ? 'late' : 'active';
+  };
+
   const handleMarkPaid = async (paymentId: string) => {
     const today = new Date().toISOString().split('T')[0];
-    setPayments(prev => prev.map(p => 
-      p.id === paymentId ? { ...p, status: 'paid', date: today } : p
-    ));
-    const payment = payments.find(p => p.id === paymentId);
-    if (payment) {
-      setTenants(prev => prev.map(t => 
-        t.id === payment.tenantId ? { ...t, status: 'active' } : t
+    const target = payments.find(p => p.id === paymentId);
+    const nextPayments = payments.map(p =>
+      p.id === paymentId ? { ...p, status: 'paid' as const, date: today } : p
+    );
+    setPayments(nextPayments);
+    if (target) {
+      setTenants(prev => prev.map(t =>
+        t.id === target.tenantId
+          ? { ...t, status: computeTenantStatusAfterPaymentChange(t.id, nextPayments, t.status) }
+          : t
       ));
     }
 
     try {
       await apiService.markPaid(paymentId);
+      await reloadAllFromServer();
     } catch (e) {
       console.error('Error al registrar pago en base de datos:', e);
     }
@@ -174,42 +190,87 @@ const App: React.FC = () => {
   const handleAddPayment = async (newPayment: Omit<Payment, 'id'>) => {
     const tempId = `pay-${Date.now()}`;
     const paymentWithId: Payment = { ...newPayment, id: tempId };
-    setPayments(prev => [paymentWithId, ...prev]);
-    if (newPayment.status === 'paid') {
-      setTenants(prev => prev.map(t => 
-        t.id === newPayment.tenantId ? { ...t, status: 'active' } : t
-      ));
+
+    let nextPayments = [paymentWithId, ...payments];
+    if (newPayment.status === 'paid' && newPayment.amount > 0) {
+      let remaining = Number(newPayment.amount);
+      const pendingChrono = nextPayments
+        .filter(p => p.tenantId === newPayment.tenantId && p.status === 'pending')
+        .sort((a, b) => a.date.localeCompare(b.date));
+
+      const adjustments = new Map<string, Payment | null>();
+      for (const pending of pendingChrono) {
+        if (remaining <= 0.0001) break;
+        const pAmt = Number(pending.amount) || 0;
+        if (pAmt <= remaining + 0.0001) {
+          remaining -= pAmt;
+          adjustments.set(pending.id, null);
+        } else {
+          const newAmt = Math.round((pAmt - remaining) * 100) / 100;
+          const rate = pending.exchangeRate || bcvRate || 52.50;
+          adjustments.set(pending.id, {
+            ...pending,
+            amount: newAmt,
+            amountBs: Math.round(newAmt * rate * 100) / 100
+          });
+          remaining = 0;
+        }
+      }
+
+      nextPayments = nextPayments
+        .map(p => (adjustments.has(p.id) ? adjustments.get(p.id)! : p))
+        .filter((p): p is Payment => p !== null);
     }
+
+    setPayments(nextPayments);
+    setTenants(prev => prev.map(t =>
+      t.id === newPayment.tenantId
+        ? { ...t, status: computeTenantStatusAfterPaymentChange(t.id, nextPayments, t.status) }
+        : t
+    ));
 
     try {
       const saved = await apiService.addPayment(newPayment);
       if (saved && saved.id) {
         setPayments(prev => prev.map(p => p.id === tempId ? saved : p));
       }
+      await reloadAllFromServer();
     } catch (e) {
       console.error('Error al guardar pago en base de datos:', e);
     }
   };
 
   const handleUpdatePayment = async (updatedPayment: Payment) => {
-    setPayments(prev => prev.map(p => p.id === updatedPayment.id ? updatedPayment : p));
-    if (updatedPayment.status === 'paid') {
-      setTenants(prev => prev.map(t => 
-        t.id === updatedPayment.tenantId ? { ...t, status: 'active' } : t
-      ));
-    }
+    const nextPayments = payments.map(p => p.id === updatedPayment.id ? updatedPayment : p);
+    setPayments(nextPayments);
+    setTenants(prev => prev.map(t =>
+      t.id === updatedPayment.tenantId
+        ? { ...t, status: computeTenantStatusAfterPaymentChange(t.id, nextPayments, t.status) }
+        : t
+    ));
 
     try {
       await apiService.savePayment(updatedPayment);
+      await reloadAllFromServer();
     } catch (e) {
       console.error('Error al modificar pago en base de datos:', e);
     }
   };
 
   const handleDeletePayment = async (paymentId: string) => {
-    setPayments(prev => prev.filter(p => p.id !== paymentId));
+    const target = payments.find(p => p.id === paymentId);
+    const nextPayments = payments.filter(p => p.id !== paymentId);
+    setPayments(nextPayments);
+    if (target) {
+      setTenants(prev => prev.map(t =>
+        t.id === target.tenantId
+          ? { ...t, status: computeTenantStatusAfterPaymentChange(t.id, nextPayments, t.status) }
+          : t
+      ));
+    }
     try {
       await apiService.deletePayment(paymentId);
+      await reloadAllFromServer();
     } catch (e) {
       console.error('Error al eliminar pago en base de datos:', e);
     }
@@ -376,6 +437,7 @@ const App: React.FC = () => {
             payments={payments} 
             onMarkPaid={handleMarkPaid} 
             bcvRate={bcvRate}
+            wsReminderTemplate={wsReminderTemplate}
             onNavigate={(view) => setView(view)}
           />
         );
@@ -386,7 +448,8 @@ const App: React.FC = () => {
             payments={payments} 
             properties={properties} 
             onAddPayment={handleAddPayment} 
-            onUpdatePayment={handleUpdatePayment} 
+            onUpdatePayment={handleUpdatePayment}
+            onMarkPaid={handleMarkPaid}
             onAddTenant={handleAddTenant} 
             onUpdateTenant={handleUpdateTenant} 
             onDeleteTenant={handleDeleteTenant}
@@ -459,6 +522,7 @@ const App: React.FC = () => {
             payments={payments} 
             onMarkPaid={handleMarkPaid} 
             bcvRate={bcvRate}
+            wsReminderTemplate={wsReminderTemplate}
             onNavigate={(view) => setView(view)}
           />
         );

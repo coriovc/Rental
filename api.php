@@ -142,9 +142,113 @@ function fetchAndUpdateBcvRate($pdo, $maxAgeMinutes = 30) {
     }
 }
 
+// Evaluar y actualizar estado de mora de un inquilino (mora si tiene saldo pendiente con >= 5 días)
+function updateTenantMoraStatus($pdo, $tenantId) {
+    if (empty($tenantId)) return;
+    $tStmt = $pdo->prepare("SELECT status FROM tenants WHERE id = ?");
+    $tStmt->execute([$tenantId]);
+    $currentStatus = $tStmt->fetchColumn();
+    if (!$currentStatus || $currentStatus === 'inactive') {
+        return;
+    }
+
+    $overdueStmt = $pdo->prepare("
+        SELECT COUNT(*) FROM payments 
+        WHERE tenantId = ? 
+          AND status = 'pending' 
+          AND amount > 0
+          AND DATEDIFF(CURDATE(), date) >= 5
+    ");
+    $overdueStmt->execute([$tenantId]);
+    $hasOverdue = (int)$overdueStmt->fetchColumn() > 0;
+
+    $newStatus = $hasOverdue ? 'late' : 'active';
+    if ($newStatus !== $currentStatus) {
+        $pdo->prepare("UPDATE tenants SET status = ? WHERE id = ?")->execute([$newStatus, $tenantId]);
+    }
+}
+
+// Generar cargo pendiente del 1 de cada mes si no existe y actualizar moras
+function syncMonthlyBillingAndMora($pdo, $bcvRate) {
+    $spanishMonths = [
+        'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+        'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
+    ];
+    $currentYear = (int)date('Y');
+    $currentMonthIdx = (int)date('n') - 1;
+    $currentMonthName = $spanishMonths[$currentMonthIdx];
+    $firstOfMonth = date('Y-m-01');
+    $today = date('Y-m-d');
+    $ymKey = date('Ym');
+
+    $tenants = $pdo->query("SELECT id, monthlyRent, startDate, status FROM tenants WHERE status != 'inactive'")->fetchAll();
+    foreach ($tenants as $t) {
+        if (!empty($t['startDate']) && $t['startDate'] > $today) {
+            continue;
+        }
+        $monthlyRent = (float)$t['monthlyRent'];
+        if ($monthlyRent <= 0) {
+            updateTenantMoraStatus($pdo, $t['id']);
+            continue;
+        }
+
+        $checkStmt = $pdo->prepare("
+            SELECT COUNT(*) FROM payments 
+            WHERE tenantId = ? AND month = ? AND YEAR(date) = ?
+        ");
+        $checkStmt->execute([$t['id'], $currentMonthName, $currentYear]);
+        if ((int)$checkStmt->fetchColumn() === 0) {
+            $autoId = 'pay-auto-' . $t['id'] . '-' . $ymKey;
+            $amountBs = round($monthlyRent * $bcvRate, 2);
+            $ins = $pdo->prepare("
+                INSERT IGNORE INTO payments (id, tenantId, amount, amountBs, exchangeRate, date, month, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
+            ");
+            $ins->execute([$autoId, $t['id'], $monthlyRent, $amountBs, $bcvRate, $firstOfMonth, $currentMonthName]);
+        }
+
+        updateTenantMoraStatus($pdo, $t['id']);
+    }
+}
+
+// Descontar un pago recibido del saldo pendiente acumulado del inquilino
+function deductFromPendingBalance($pdo, $tenantId, $paidAmount, $fallbackRate = 52.50) {
+    $remaining = (float)$paidAmount;
+    if ($remaining <= 0 || empty($tenantId)) return;
+
+    $stmt = $pdo->prepare("
+        SELECT id, amount, exchangeRate FROM payments 
+        WHERE tenantId = ? AND status = 'pending' 
+        ORDER BY date ASC, created_at ASC
+    ");
+    $stmt->execute([$tenantId]);
+    $pendingRows = $stmt->fetchAll();
+
+    foreach ($pendingRows as $row) {
+        if ($remaining <= 0.0001) break;
+        $pendingAmt = (float)$row['amount'];
+        if ($pendingAmt <= $remaining + 0.0001) {
+            $remaining -= $pendingAmt;
+            $pdo->prepare("DELETE FROM payments WHERE id = ?")->execute([$row['id']]);
+        } else {
+            $newAmt = round($pendingAmt - $remaining, 2);
+            $rate = (float)$row['exchangeRate'] > 0 ? (float)$row['exchangeRate'] : $fallbackRate;
+            $newBs = round($newAmt * $rate, 2);
+            $pdo->prepare("UPDATE payments SET amount = ?, amountBs = ? WHERE id = ?")->execute([$newAmt, $newBs, $row['id']]);
+            $remaining = 0;
+        }
+    }
+}
+
 try {
     switch ($action) {
         case 'get_all':
+            // Actualización automática de la tasa BCV si requiere refresco
+            $liveBcv = fetchAndUpdateBcvRate($pdo, 30);
+
+            // Generar cargos del 1 de mes y evaluar mora (> 5 días)
+            syncMonthlyBillingAndMora($pdo, $liveBcv);
+
             $propsRows = $pdo->query("SELECT * FROM properties ORDER BY created_at DESC")->fetchAll();
             $tenantsRows = $pdo->query("SELECT * FROM tenants ORDER BY created_at DESC")->fetchAll();
             $paymentsRows = $pdo->query("SELECT * FROM payments ORDER BY date DESC, created_at DESC")->fetchAll();
@@ -160,9 +264,6 @@ try {
             foreach ($settingsRows as $s) {
                 $settings[$s['setting_key']] = $s['setting_value'];
             }
-
-            // Actualización automática de la tasa BCV si requiere refresco
-            $liveBcv = fetchAndUpdateBcvRate($pdo, 30);
             $settings['bcv_rate'] = (string)$liveBcv;
 
             echo json_encode([
@@ -335,7 +436,9 @@ try {
 
             $exists = $pdo->prepare("SELECT COUNT(*) FROM payments WHERE id = ?");
             $exists->execute([$id]);
-            if ($exists->fetchColumn() > 0) {
+            $isUpdate = $exists->fetchColumn() > 0;
+
+            if ($isUpdate) {
                 $stmt = $pdo->prepare("
                     UPDATE payments 
                     SET tenantId = ?, amount = ?, amountBs = ?, exchangeRate = ?, date = ?, month = ?, status = ?
@@ -348,10 +451,16 @@ try {
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ");
                 $stmt->execute([$id, $tenantId, $amount, $amountBs, $exchangeRate, $date, $month, $status]);
+
+                // Si se registra un nuevo pago cobrado, descontar del saldo pendiente acumulado
+                if ($status === 'paid' && $amount > 0 && !empty($tenantId)) {
+                    $fallbackRate = $exchangeRate > 0 ? $exchangeRate : 52.50;
+                    deductFromPendingBalance($pdo, $tenantId, $amount, $fallbackRate);
+                }
             }
 
-            if ($status === 'paid' && !empty($tenantId)) {
-                $pdo->prepare("UPDATE tenants SET status = 'active' WHERE id = ?")->execute([$tenantId]);
+            if (!empty($tenantId)) {
+                updateTenantMoraStatus($pdo, $tenantId);
             }
 
             echo json_encode([
@@ -385,7 +494,7 @@ try {
             $tenantId = $payStmt->fetchColumn();
 
             if ($tenantId) {
-                $pdo->prepare("UPDATE tenants SET status = 'active' WHERE id = ?")->execute([$tenantId]);
+                updateTenantMoraStatus($pdo, $tenantId);
             }
 
             echo json_encode(['success' => true, 'date' => $date]);
@@ -397,7 +506,15 @@ try {
                 echo json_encode(['success' => false, 'error' => 'ID requerido']);
                 exit;
             }
+            $payStmt = $pdo->prepare("SELECT tenantId FROM payments WHERE id = ?");
+            $payStmt->execute([$id]);
+            $tenantId = $payStmt->fetchColumn();
+
             $pdo->prepare("DELETE FROM payments WHERE id = ?")->execute([$id]);
+
+            if ($tenantId) {
+                updateTenantMoraStatus($pdo, $tenantId);
+            }
             echo json_encode(['success' => true]);
             break;
 

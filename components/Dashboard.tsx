@@ -9,9 +9,10 @@ import {
   AreaChart,
   Area
 } from 'recharts';
-import { Users, Home, Wallet, Clock, CheckCircle2, CreditCard } from 'lucide-react';
+import { Users, Home, Wallet, Clock, CheckCircle2, CreditCard, MessageSquare } from 'lucide-react';
 import { GlassCard } from './GlassCard';
 import { Tenant, Property, Payment } from '../types';
+import { getWhatsAppReminderLink } from '../services/pdfService';
 
 interface DashboardProps {
   tenants: Tenant[];
@@ -19,6 +20,7 @@ interface DashboardProps {
   payments: Payment[];
   onMarkPaid: (paymentId: string) => void;
   bcvRate?: number;
+  wsReminderTemplate?: string;
   onNavigate?: (view: any) => void;
 }
 
@@ -109,6 +111,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
   payments, 
   onMarkPaid,
   bcvRate = 52.50,
+  wsReminderTemplate,
   onNavigate 
 }) => {
   const [chartView, setChartView] = useState<'year' | 'last6'>('year');
@@ -487,7 +490,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {payments.slice(0, 5).map((pay) => {
+              {[...payments]
+                .sort((a, b) => (a.status === 'pending' && b.status !== 'pending' ? -1 : a.status !== 'pending' && b.status === 'pending' ? 1 : 0))
+                .slice(0, 5)
+                .map((pay) => {
                 const tenant = tenants.find(t => t.id === pay.tenantId);
                 const bsVal = pay.amountBs || (pay.amount * bcvRate);
                 return (
@@ -522,17 +528,31 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     <td className="py-4 text-right pr-2">
                       <AnimatePresence mode="wait">
                         {pay.status === 'pending' ? (
-                          <motion.button 
-                            key="btn-pay"
-                            initial={{ opacity: 0, scale: 0.8 }}
-                            animate={{ opacity: 1, scale: 1 }}
-                            exit={{ opacity: 0, scale: 0.8 }}
-                            onClick={() => onMarkPaid(pay.id)} 
-                            className="p-1.5 text-indigo-600 bg-indigo-50 dark:bg-indigo-950/50 rounded-lg hover:bg-indigo-600 hover:text-white transition-all"
-                            title="Marcar como cobrado"
-                          >
-                            <CreditCard size={14} />
-                          </motion.button>
+                          <div className="inline-flex items-center justify-end gap-2">
+                            {tenant && (
+                              <a
+                                href={getWhatsAppReminderLink(tenant, pay, wsReminderTemplate, bcvRate)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200/70 dark:border-emerald-800/50 rounded-lg hover:bg-emerald-600 hover:text-white transition-all"
+                                title={`Enviar recordatorio por WhatsApp ($${pay.amount} pendiente)`}
+                              >
+                                <MessageSquare size={13} />
+                                <span>Recordar</span>
+                              </a>
+                            )}
+                            <motion.button 
+                              key="btn-pay"
+                              initial={{ opacity: 0, scale: 0.8 }}
+                              animate={{ opacity: 1, scale: 1 }}
+                              exit={{ opacity: 0, scale: 0.8 }}
+                              onClick={() => onMarkPaid(pay.id)} 
+                              className="p-1.5 text-indigo-600 bg-indigo-50 dark:bg-indigo-950/50 rounded-lg hover:bg-indigo-600 hover:text-white transition-all"
+                              title="Marcar como cobrado"
+                            >
+                              <CreditCard size={14} />
+                            </motion.button>
+                          </div>
                         ) : (
                           <div className="text-emerald-500 inline-block pr-2">
                             <CheckCircle2 size={18} />
